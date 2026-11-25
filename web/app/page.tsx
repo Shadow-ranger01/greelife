@@ -1,0 +1,508 @@
+"use client";
+
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  type User,
+} from "firebase/auth";
+import { limitToLast, onValue, query, ref, set } from "firebase/database";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
+  AlertTriangle,
+  BarChart3,
+  Droplets,
+  Download,
+  Gauge,
+  LineChart as LineChartIcon,
+  LogOut,
+  Power,
+  Sparkles,
+  Sun,
+  Thermometer,
+  Waves,
+  Wind,
+} from "lucide-react";
+import { auth, db, isFirebaseConfigured } from "@/lib/firebase";
+import { computePumpDecision, toCsv, validateLimits } from "@/lib/irrigation.mjs";
+import {
+  DEFAULT_CONTROL,
+  DEFAULT_LIMITS,
+  type HistoryPoint,
+  type PumpControl,
+  type SensorReading,
+  type SystemLimits,
+} from "@/lib/types";
+
+export default function DashboardPage() {
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const [latest, setLatest] = useState<SensorReading | null>(null);
+  const [history, setHistory] = useState<HistoryPoint[]>([]);
+  const [limits, setLimits] = useState<SystemLimits>(DEFAULT_LIMITS);
+  const [limitDraft, setLimitDraft] = useState<SystemLimits>(DEFAULT_LIMITS);
+  const [control, setControl] = useState<PumpControl>(DEFAULT_CONTROL);
+
+  const [chartType, setChartType] = useState<"line" | "bar">("line");
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [aiInsight, setAiInsight] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  useEffect(() => {
+    if (!auth) {
+      setAuthReady(true);
+      return;
+    }
+    return onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!db || !user) return;
+
+    const unsubLatest = onValue(ref(db, "sensors/latest"), (snap) => {
+      const val = snap.val();
+      if (val) setLatest(val as SensorReading);
+    });
+
+    const historyQuery = query(ref(db, "sensors/history"), limitToLast(40));
+    const unsubHistory = onValue(historyQuery, (snap) => {
+      const val = snap.val() as Record<string, Omit<HistoryPoint, "id">> | null;
+      if (!val) {
+        setHistory([]);
+        return;
+      }
+      const rows = Object.entries(val)
+        .map(([id, item]) => ({ id, ...item }))
+        .sort((a, b) => a.ts - b.ts);
+      setHistory(rows);
+    });
+
+    const unsubLimits = onValue(ref(db, "config/limits"), (snap) => {
+      const val = snap.val();
+      if (val) {
+        const merged = { ...DEFAULT_LIMITS, ...val } as SystemLimits;
+        setLimits(merged);
+        setLimitDraft(merged);
+      }
+    });
+
+    const unsubControl = onValue(ref(db, "control/pump"), (snap) => {
+      const val = snap.val();
+      if (val) setControl({ ...DEFAULT_CONTROL, ...val } as PumpControl);
+    });
+
+    return () => {
+      unsubLatest();
+      unsubHistory();
+      unsubLimits();
+      unsubControl();
+    };
+  }, [user]);
+
+  const chartData = useMemo(
+    () =>
+      history.map((pt) => ({
+        ...pt,
+        timeLabel: new Date(pt.ts).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      })),
+    [history]
+  );
+
+  const dryTank = latest ? latest.tankPercent < limits.tankMinPercent : false;
+  const highTemp = latest ? latest.temp > limits.tempMax : false;
+  const expectedDecision = latest
+    ? computePumpDecision(
+        latest.soilMoisture,
+        latest.tankPercent,
+        limits,
+        control,
+        latest.pumpOn
+      )
+    : null;
+
+  async function handleLogin(e: FormEvent) {
+    e.preventDefault();
+    if (!auth) return;
+    setAuthError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Login failed.");
+    }
+  }
+
+  async function updateControl(next: PumpControl) {
+    if (!db) return;
+    setSaveMessage(null);
+    await set(ref(db, "control/pump"), next);
+  }
+
+  async function handleSaveLimits(e: FormEvent) {
+    e.preventDefault();
+    if (!db) return;
+    const err = validateLimits(limitDraft);
+    if (err) {
+      setSaveMessage(err);
+      return;
+    }
+    await set(ref(db, "config/limits"), limitDraft);
+    setSaveMessage("লিমিট সফলভাবে সংরক্ষিত হয়েছে।");
+  }
+
+  function handleExportCsv() {
+    if (history.length === 0) return;
+    const csv = toCsv(history);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `microclimate-history-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handlePredict() {
+    setAiLoading(true);
+    setAiInsight(null);
+    try {
+      const token = user ? await user.getIdToken() : "";
+      const res = await fetch("/api/predict", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ history, latest, limits }),
+      });
+      const data = await res.json();
+      setAiInsight(res.ok ? data.insight : `Error: ${data.error}`);
+    } catch {
+      setAiInsight("AI সার্ভারে সংযোগ করা যায়নি।");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  if (!isFirebaseConfigured) {
+    return (
+      <main className="mx-auto max-w-xl p-6 mt-12 rounded-xl border bg-white shadow-sm">
+        <h1 className="text-xl font-bold text-slate-900">Firebase কনফিগার করা হয়নি</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          <code>web/.env.example</code> কপি করে <code>web/.env.local</code> তৈরি করুন এবং Firebase ও Gemini কী দিন।
+        </p>
+      </main>
+    );
+  }
+
+  if (!authReady) {
+    return <main className="p-8 text-center text-slate-500">লোড হচ্ছে...</main>;
+  }
+
+  if (!user) {
+    return (
+      <main className="mx-auto max-w-md p-6 mt-16 rounded-2xl border bg-white shadow-sm">
+        <h1 className="text-xl font-bold text-slate-900">Smart Agro Monitor Login</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          ডেটা দেখা ও মোটর কন্ট্রোলের জন্য সাইন ইন করুন।
+        </p>
+        <form onSubmit={handleLogin} className="mt-5 space-y-4">
+          <input
+            type="email"
+            required
+            placeholder="Admin Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full rounded-lg border px-3 py-2 text-sm"
+          />
+          <input
+            type="password"
+            required
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full rounded-lg border px-3 py-2 text-sm"
+          />
+          {authError && <p className="text-sm text-red-600">{authError}</p>}
+          <button
+            type="submit"
+            className="w-full rounded-lg bg-emerald-600 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+          >
+            Sign In
+          </button>
+        </form>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mx-auto max-w-6xl p-4 sm:p-6 space-y-6">
+      <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white p-4 shadow-sm">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">
+            IoT Micro-Climate & Precision Agriculture
+          </h1>
+          <p className="text-xs text-slate-500">
+            {latest?.updatedAt
+              ? `সর্বশেষ আপডেট: ${new Date(latest.updatedAt).toLocaleString()}`
+              : "ESP32 ডেটার জন্য অপেক্ষা করছে..."}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              latest?.pumpOn
+                ? "bg-emerald-100 text-emerald-800"
+                : "bg-slate-100 text-slate-700"
+            }`}
+          >
+            Pump: {latest?.pumpOn ? "ON" : "OFF"} ({control.mode.toUpperCase()})
+          </span>
+          <button
+            onClick={() => auth && signOut(auth)}
+            className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <LogOut className="h-3.5 w-3.5" /> Logout
+          </button>
+        </div>
+      </header>
+
+      {(dryTank || highTemp) && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>
+            {dryTank && "ট্যাংকে পানি কম! ড্রাই-রান সুরক্ষায় পাম্প লক করা আছে। "}
+            {highTemp && `তাপমাত্রা সীমা (${limits.tempMax}°C) ছাড়িয়েছে!`}
+          </span>
+        </div>
+      )}
+
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <StatCard icon={<Thermometer className="h-4 w-4 text-rose-500" />} label="Temperature" value={latest ? `${latest.temp.toFixed(1)} °C` : "--"} />
+        <StatCard icon={<Droplets className="h-4 w-4 text-sky-500" />} label="Humidity" value={latest ? `${latest.humidity.toFixed(0)} %` : "--"} />
+        <StatCard icon={<Wind className="h-4 w-4 text-indigo-500" />} label="Pressure" value={latest ? `${latest.pressure.toFixed(0)} hPa` : "--"} />
+        <StatCard icon={<Sun className="h-4 w-4 text-amber-500" />} label="Light" value={latest ? `${latest.light.toFixed(0)} lx` : "--"} />
+        <StatCard icon={<Gauge className="h-4 w-4 text-emerald-600" />} label="Soil Moisture" value={latest ? `${latest.soilMoisture.toFixed(0)} %` : "--"} />
+        <StatCard icon={<Waves className="h-4 w-4 text-cyan-600" />} label="Water Tank" value={latest ? `${latest.tankPercent.toFixed(0)} %` : "--"} />
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-2">
+        <div className="rounded-2xl border bg-white p-5 shadow-sm space-y-4">
+          <h2 className="font-semibold text-slate-900">Motor / Pump Control</h2>
+          <div className="flex gap-2">
+            <button
+              onClick={() => updateControl({ ...control, mode: "auto" })}
+              className={`flex-1 rounded-lg py-2 text-sm font-medium border ${
+                control.mode === "auto"
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Auto Mode
+            </button>
+            <button
+              onClick={() => updateControl({ ...control, mode: "manual" })}
+              className={`flex-1 rounded-lg py-2 text-sm font-medium border ${
+                control.mode === "manual"
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              Manual Mode
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between rounded-xl bg-slate-50 p-4">
+            <div className="text-sm">
+              <p className="font-medium text-slate-800">
+                {control.mode === "auto"
+                  ? `অটো হিস্টেরেসিস (${limits.soilMin}% – ${limits.soilMax}%)`
+                  : "ম্যানুয়াল পাম্প সুইচ"}
+              </p>
+              <p className="text-xs text-slate-500">
+                সিদ্ধান্ত: {expectedDecision ? expectedDecision.reason : "waiting"}
+              </p>
+            </div>
+            <button
+              disabled={control.mode === "auto" || dryTank}
+              onClick={() =>
+                updateControl({ mode: "manual", manualOn: !control.manualOn })
+              }
+              className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-40 ${
+                control.manualOn ? "bg-rose-600 hover:bg-rose-700" : "bg-emerald-600 hover:bg-emerald-700"
+              }`}
+            >
+              <Power className="h-4 w-4" />
+              {control.manualOn ? "Turn OFF" : "Turn ON"}
+            </button>
+          </div>
+        </div>
+
+        <form onSubmit={handleSaveLimits} className="rounded-2xl border bg-white p-5 shadow-sm space-y-4">
+          <h2 className="font-semibold text-slate-900">Min / Max Threshold Limits</h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 text-sm">
+            <LimitInput label="Soil Min (%)" value={limitDraft.soilMin} onChange={(v) => setLimitDraft({ ...limitDraft, soilMin: v })} />
+            <LimitInput label="Soil Max (%)" value={limitDraft.soilMax} onChange={(v) => setLimitDraft({ ...limitDraft, soilMax: v })} />
+            <LimitInput label="Temp Max (°C)" value={limitDraft.tempMax} onChange={(v) => setLimitDraft({ ...limitDraft, tempMax: v })} />
+            <LimitInput label="Tank Min (%)" value={limitDraft.tankMinPercent} onChange={(v) => setLimitDraft({ ...limitDraft, tankMinPercent: v })} />
+            <LimitInput label="Log Interval (m)" value={limitDraft.logIntervalMin} onChange={(v) => setLimitDraft({ ...limitDraft, logIntervalMin: v })} />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-600">{saveMessage ?? ""}</span>
+            <button
+              type="submit"
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            >
+              Save Limits
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section className="rounded-2xl border bg-white p-5 shadow-sm space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-semibold text-slate-900">Historical Sensor Trends</h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setChartType("line")}
+              className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                chartType === "line" ? "bg-slate-900 text-white" : "text-slate-700"
+              }`}
+            >
+              <LineChartIcon className="h-3.5 w-3.5" /> Line
+            </button>
+            <button
+              onClick={() => setChartType("bar")}
+              className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                chartType === "bar" ? "bg-slate-900 text-white" : "text-slate-700"
+              }`}
+            >
+              <BarChart3 className="h-3.5 w-3.5" /> Bar
+            </button>
+            <button
+              onClick={handleExportCsv}
+              disabled={history.length === 0}
+              className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+            >
+              <Download className="h-3.5 w-3.5" /> Export CSV
+            </button>
+          </div>
+        </div>
+
+        <div className="h-72 w-full">
+          {chartData.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-sm text-slate-400">
+              হিস্ট্রি গ্রাফের জন্য ডেটা নেই
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              {chartType === "line" ? (
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="timeLabel" fontSize={12} />
+                  <YAxis fontSize={12} />
+                  <Tooltip />
+                  <Legend />
+                  <Line type="monotone" dataKey="soilMoisture" name="Soil (%)" stroke="#059669" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="temp" name="Temp (°C)" stroke="#e11d48" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="humidity" name="Humidity (%)" stroke="#0284c7" strokeWidth={2} dot={false} />
+                </LineChart>
+              ) : (
+                <BarChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="timeLabel" fontSize={12} />
+                  <YAxis fontSize={12} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="soilMoisture" name="Soil (%)" fill="#059669" />
+                  <Bar dataKey="temp" name="Temp (°C)" fill="#e11d48" />
+                  <Bar dataKey="humidity" name="Humidity (%)" fill="#0284c7" />
+                </BarChart>
+              )}
+            </ResponsiveContainer>
+          )}
+        </div>
+      </section>
+
+      <section className="rounded-2xl border bg-white p-5 shadow-sm space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-slate-900">Gemini Climate & Irrigation Insight</h2>
+          <button
+            onClick={handlePredict}
+            disabled={aiLoading}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {aiLoading ? "বিশ্লেষণ হচ্ছে..." : "AI বিশ্লেষণ দেখুন"}
+          </button>
+        </div>
+        <div className="whitespace-pre-wrap rounded-xl bg-slate-50 p-4 text-sm text-slate-700">
+          {aiInsight ?? "সংরক্ষিত সেন্সর ডেটা বিশ্লেষণ করতে উপরের বাটনে ক্লিক করুন।"}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function StatCard({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-xl border bg-white p-3.5 shadow-sm">
+      <div className="flex items-center justify-between text-xs text-slate-500">
+        <span>{label}</span>
+        {icon}
+      </div>
+      <p className="mt-2 text-lg font-bold text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+function LimitInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (val: number) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs text-slate-600">{label}</span>
+      <input
+        type="number"
+        value={Number.isNaN(value) ? "" : value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-1 w-full rounded-lg border px-2.5 py-1.5 text-sm"
+      />
+    </label>
+  );
+}
