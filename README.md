@@ -1,6 +1,6 @@
-# IoT Micro-Climate Monitoring System & Precision Agriculture
+# Green Life — IoT Micro-Climate Monitoring & Precision Agriculture
 
-**Stack:** Next.js (App Router) + Firebase Realtime Database + Vercel + Gemini API + ESP32
+**Stack:** Next.js (App Router) + Firebase Authentication (Email/Password & Google Sign-In) + Cloud Firestore (`greenlife-db`) + Vercel + Gemini API + ESP32
 
 ## 1. Hardware Wiring (ESP32)
 
@@ -13,17 +13,18 @@
 | 1-Channel 5V Relay + Pump | `GPIO 26` | Power relay & pump from external `5V` adapter, share `GND` with ESP32 |
 | 3.3V Active Buzzer | `GPIO 25` | Alerts on low tank or high temp |
 
-## 2. Firebase Setup
-1. Create a Firebase project and enable **Realtime Database** + **Authentication (Email/Password)**.
-2. Create two users in Authentication: one admin account (for web login) and one device account (for ESP32).
-3. Apply [database.rules.json](./database.rules.json) to your Realtime Database Rules.
+## 2. Firebase Project (`green-life-1436d`)
+- Web App registered: `greenlife-web` (`1:214170718127:web:3071937fe7026ea7e3695a`)
+- Cloud Firestore database: `greenlife-db` (Enterprise Native, `asia-southeast1`)
+- Rules & Indexes: [firestore.rules](./firestore.rules) & [firestore.indexes.json](./firestore.indexes.json)
+- Auth providers: Email/Password & Google Sign-In (create one Email/Password user for ESP32, and sign in via Email/Password or Google on the web app).
 
 ## 3. Web Dashboard (Local & Vercel)
 ```bash
 cd web
-cp .env.example .env.local   # Fill Firebase keys + GEMINI_API_KEY
+cp .env.example .env.local   # Add Firebase keys + GEMINI_API_KEY
 npm install
 npm test
 npm run dev
 ```
-Deploy `web/` to **Vercel** and add the exact same variables from `.env.example` in Vercel Project Settings → Environment Variables.
+Deploy `web/` to **Vercel**, add the same environment variables from `web/.env.example`, and add your Vercel domain under Firebase Console → Authentication → Settings → Authorized domains (needed for Google Sign-In).

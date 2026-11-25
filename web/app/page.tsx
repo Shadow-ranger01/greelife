@@ -1,13 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import {
+  createUserWithEmailAndPassword,
   onAuthStateChanged,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signOut,
   type User,
 } from "firebase/auth";
-import { limitToLast, onValue, query, ref, set } from "firebase/database";
+import {
+  collection,
+  doc,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  setDoc,
+} from "firebase/firestore";
 import {
   Bar,
   BarChart,
@@ -25,6 +35,8 @@ import {
   BarChart3,
   Droplets,
   Download,
+  Eye,
+  EyeOff,
   Gauge,
   LineChart as LineChartIcon,
   LogOut,
@@ -35,7 +47,7 @@ import {
   Waves,
   Wind,
 } from "lucide-react";
-import { auth, db, isFirebaseConfigured } from "@/lib/firebase";
+import { auth, db, googleProvider, isFirebaseConfigured } from "@/lib/firebase";
 import { computePumpDecision, toCsv, validateLimits } from "@/lib/irrigation.mjs";
 import {
   DEFAULT_CONTROL,
@@ -49,9 +61,12 @@ import {
 export default function DashboardPage() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authPending, setAuthPending] = useState(false);
 
   const [latest, setLatest] = useState<SensorReading | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
@@ -78,36 +93,34 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!db || !user) return;
 
-    const unsubLatest = onValue(ref(db, "sensors/latest"), (snap) => {
-      const val = snap.val();
-      if (val) setLatest(val as SensorReading);
+    const unsubLatest = onSnapshot(doc(db, "telemetry", "latest"), (snap) => {
+      if (snap.exists()) setLatest(snap.data() as SensorReading);
     });
 
-    const historyQuery = query(ref(db, "sensors/history"), limitToLast(40));
-    const unsubHistory = onValue(historyQuery, (snap) => {
-      const val = snap.val() as Record<string, Omit<HistoryPoint, "id">> | null;
-      if (!val) {
-        setHistory([]);
-        return;
-      }
-      const rows = Object.entries(val)
-        .map(([id, item]) => ({ id, ...item }))
+    const historyQuery = query(
+      collection(db, "history"),
+      orderBy("ts", "desc"),
+      limit(40)
+    );
+    const unsubHistory = onSnapshot(historyQuery, (snap) => {
+      const rows = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as Omit<HistoryPoint, "id">) }))
         .sort((a, b) => a.ts - b.ts);
       setHistory(rows);
     });
 
-    const unsubLimits = onValue(ref(db, "config/limits"), (snap) => {
-      const val = snap.val();
-      if (val) {
-        const merged = { ...DEFAULT_LIMITS, ...val } as SystemLimits;
+    const unsubLimits = onSnapshot(doc(db, "config", "limits"), (snap) => {
+      if (snap.exists()) {
+        const merged = { ...DEFAULT_LIMITS, ...snap.data() } as SystemLimits;
         setLimits(merged);
         setLimitDraft(merged);
       }
     });
 
-    const unsubControl = onValue(ref(db, "control/pump"), (snap) => {
-      const val = snap.val();
-      if (val) setControl({ ...DEFAULT_CONTROL, ...val } as PumpControl);
+    const unsubControl = onSnapshot(doc(db, "control", "pump"), (snap) => {
+      if (snap.exists()) {
+        setControl({ ...DEFAULT_CONTROL, ...snap.data() } as PumpControl);
+      }
     });
 
     return () => {
@@ -142,21 +155,44 @@ export default function DashboardPage() {
       )
     : null;
 
-  async function handleLogin(e: FormEvent) {
+  async function handleEmailAuth(e: FormEvent) {
     e.preventDefault();
     if (!auth) return;
     setAuthError(null);
+    setAuthPending(true);
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
+      if (isSignUp) {
+        await createUserWithEmailAndPassword(auth, email.trim(), password);
+      } else {
+        await signInWithEmailAndPassword(auth, email.trim(), password);
+      }
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : "Login failed.");
+      setAuthError(err instanceof Error ? err.message : "Authentication failed.");
+    } finally {
+      setAuthPending(false);
+    }
+  }
+
+  async function handleGoogleSignIn() {
+    if (!auth) return;
+    setAuthError(null);
+    setAuthPending(true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Google Sign-In failed.");
+    } finally {
+      setAuthPending(false);
     }
   }
 
   async function updateControl(next: PumpControl) {
     if (!db) return;
     setSaveMessage(null);
-    await set(ref(db, "control/pump"), next);
+    await setDoc(doc(db, "control", "pump"), {
+      mode: next.mode,
+      manualOn: Boolean(next.manualOn),
+    });
   }
 
   async function handleSaveLimits(e: FormEvent) {
@@ -167,7 +203,13 @@ export default function DashboardPage() {
       setSaveMessage(err);
       return;
     }
-    await set(ref(db, "config/limits"), limitDraft);
+    await setDoc(doc(db, "config", "limits"), {
+      soilMin: limitDraft.soilMin,
+      soilMax: limitDraft.soilMax,
+      tempMax: limitDraft.tempMax,
+      tankMinPercent: limitDraft.tankMinPercent,
+      logIntervalMin: limitDraft.logIntervalMin,
+    });
     setSaveMessage("লিমিট সফলভাবে সংরক্ষিত হয়েছে।");
   }
 
@@ -222,36 +264,106 @@ export default function DashboardPage() {
 
   if (!user) {
     return (
-      <main className="mx-auto max-w-md p-6 mt-16 rounded-2xl border bg-white shadow-sm">
-        <h1 className="text-xl font-bold text-slate-900">Smart Agro Monitor Login</h1>
+      <main className="mx-auto max-w-md p-6 mt-14 rounded-2xl border bg-white shadow-sm">
+        <h1 className="text-xl font-bold text-slate-900">
+          {isSignUp ? "Create Green Life Account" : "Green Life Monitor Sign In"}
+        </h1>
         <p className="mt-1 text-sm text-slate-500">
           ডেটা দেখা ও মোটর কন্ট্রোলের জন্য সাইন ইন করুন।
         </p>
-        <form onSubmit={handleLogin} className="mt-5 space-y-4">
-          <input
-            type="email"
-            required
-            placeholder="Admin Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-lg border px-3 py-2 text-sm"
-          />
-          <input
-            type="password"
-            required
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-lg border px-3 py-2 text-sm"
-          />
-          {authError && <p className="text-sm text-red-600">{authError}</p>}
+
+        <form onSubmit={handleEmailAuth} method="POST" className="mt-5 space-y-4">
+          <div>
+            <label htmlFor="email" className="block text-xs font-medium text-slate-700">
+              Email <span aria-hidden="true">*</span>
+            </label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="username"
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="none"
+              enterKeyHint="next"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="mt-1 w-full min-h-[44px] rounded-lg border border-slate-300 px-3 py-2 text-base sm:text-sm"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="password" className="block text-xs font-medium text-slate-700">
+              Password <span aria-hidden="true">*</span>
+            </label>
+            <div className="relative mt-1">
+              <input
+                id="password"
+                name="password"
+                type={showPassword ? "text" : "password"}
+                autoComplete={isSignUp ? "new-password" : "current-password"}
+                enterKeyHint="done"
+                minLength={6}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full min-h-[44px] rounded-lg border border-slate-300 px-3 py-2 pr-10 text-base sm:text-sm"
+              />
+              <button
+                type="button"
+                aria-pressed={showPassword}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((prev) => !prev)}
+                className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-500 hover:text-slate-700"
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+
+          {authError && (
+            <p role="alert" aria-live="polite" className="text-sm text-red-600">
+              {authError}
+            </p>
+          )}
+
           <button
             type="submit"
-            className="w-full rounded-lg bg-emerald-600 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            disabled={authPending}
+            className="w-full min-h-[44px] rounded-lg bg-emerald-600 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
           >
-            Sign In
+            {isSignUp ? "Create Account" : "Sign In"}
           </button>
         </form>
+
+        <div className="my-4 flex items-center gap-3 text-xs text-slate-400">
+          <div className="h-px flex-1 bg-slate-200" />
+          <span>অথবা</span>
+          <div className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        <button
+          type="button"
+          disabled={authPending}
+          onClick={handleGoogleSignIn}
+          className="w-full min-h-[44px] rounded-lg border border-slate-300 bg-white py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+        >
+          Sign in with Google
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setIsSignUp((prev) => !prev);
+            setAuthError(null);
+          }}
+          className="mt-4 w-full text-center text-xs text-emerald-700 hover:underline"
+        >
+          {isSignUp
+            ? "আগে থেকেই অ্যাকাউন্ট আছে? Sign In করুন"
+            : "নতুন অ্যাকাউন্ট খুলতে চান? Create Account"}
+        </button>
       </main>
     );
   }
@@ -261,9 +373,10 @@ export default function DashboardPage() {
       <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white p-4 shadow-sm">
         <div>
           <h1 className="text-xl font-bold text-slate-900">
-            IoT Micro-Climate & Precision Agriculture
+            Green Life — IoT Micro-Climate & Precision Agriculture
           </h1>
           <p className="text-xs text-slate-500">
+            {user.email ?? user.displayName} •{" "}
             {latest?.updatedAt
               ? `সর্বশেষ আপডেট: ${new Date(latest.updatedAt).toLocaleString()}`
               : "ESP32 ডেটার জন্য অপেক্ষা করছে..."}
@@ -280,6 +393,7 @@ export default function DashboardPage() {
             Pump: {latest?.pumpOn ? "ON" : "OFF"} ({control.mode.toUpperCase()})
           </span>
           <button
+            type="button"
             onClick={() => auth && signOut(auth)}
             className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
           >
@@ -289,7 +403,10 @@ export default function DashboardPage() {
       </header>
 
       {(dryTank || highTemp) && (
-        <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+        >
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>
             {dryTank && "ট্যাংকে পানি কম! ড্রাই-রান সুরক্ষায় পাম্প লক করা আছে। "}
@@ -312,6 +429,7 @@ export default function DashboardPage() {
           <h2 className="font-semibold text-slate-900">Motor / Pump Control</h2>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => updateControl({ ...control, mode: "auto" })}
               className={`flex-1 rounded-lg py-2 text-sm font-medium border ${
                 control.mode === "auto"
@@ -322,6 +440,7 @@ export default function DashboardPage() {
               Auto Mode
             </button>
             <button
+              type="button"
               onClick={() => updateControl({ ...control, mode: "manual" })}
               className={`flex-1 rounded-lg py-2 text-sm font-medium border ${
                 control.mode === "manual"
@@ -345,6 +464,7 @@ export default function DashboardPage() {
               </p>
             </div>
             <button
+              type="button"
               disabled={control.mode === "auto" || dryTank}
               onClick={() =>
                 updateControl({ mode: "manual", manualOn: !control.manualOn })
@@ -369,7 +489,9 @@ export default function DashboardPage() {
             <LimitInput label="Log Interval (m)" value={limitDraft.logIntervalMin} onChange={(v) => setLimitDraft({ ...limitDraft, logIntervalMin: v })} />
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-600">{saveMessage ?? ""}</span>
+            <span role="status" aria-live="polite" className="text-xs text-slate-600">
+              {saveMessage ?? ""}
+            </span>
             <button
               type="submit"
               className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
@@ -385,6 +507,7 @@ export default function DashboardPage() {
           <h2 className="font-semibold text-slate-900">Historical Sensor Trends</h2>
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={() => setChartType("line")}
               className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium ${
                 chartType === "line" ? "bg-slate-900 text-white" : "text-slate-700"
@@ -393,6 +516,7 @@ export default function DashboardPage() {
               <LineChartIcon className="h-3.5 w-3.5" /> Line
             </button>
             <button
+              type="button"
               onClick={() => setChartType("bar")}
               className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium ${
                 chartType === "bar" ? "bg-slate-900 text-white" : "text-slate-700"
@@ -401,6 +525,7 @@ export default function DashboardPage() {
               <BarChart3 className="h-3.5 w-3.5" /> Bar
             </button>
             <button
+              type="button"
               onClick={handleExportCsv}
               disabled={history.length === 0}
               className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
@@ -449,6 +574,7 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between">
           <h2 className="font-semibold text-slate-900">Gemini Climate & Irrigation Insight</h2>
           <button
+            type="button"
             onClick={handlePredict}
             disabled={aiLoading}
             className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
@@ -494,15 +620,19 @@ function LimitInput({
   value: number;
   onChange: (val: number) => void;
 }) {
+  const inputId = useId();
   return (
-    <label className="block">
-      <span className="text-xs text-slate-600">{label}</span>
+    <div>
+      <label htmlFor={inputId} className="block text-xs text-slate-600">
+        {label}
+      </label>
       <input
+        id={inputId}
         type="number"
         value={Number.isNaN(value) ? "" : value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="mt-1 w-full rounded-lg border px-2.5 py-1.5 text-sm"
+        className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
       />
-    </label>
+    </div>
   );
 }

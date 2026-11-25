@@ -1,6 +1,6 @@
 /*
  * IoT Micro-Climate Monitoring System with Data Logging & Precision Agriculture
- * ESP32 + Firebase Realtime Database (Direct HTTPS via Firebase_ESP_Client)
+ * ESP32 + Cloud Firestore (green-life-1436d / greenlife-db via Firebase_ESP_Client)
  */
 
 #include <WiFi.h>
@@ -14,16 +14,16 @@
 #include <Adafruit_SSD1306.h>
 #include <Firebase_ESP_Client.h>
 #include "addons/TokenHelper.h"
-#include "addons/RTDBHelper.h"
 
 // ---------------- USER CONFIG ----------------
-#define WIFI_SSID       "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID             "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD         "YOUR_WIFI_PASSWORD"
 
-#define API_KEY         "YOUR_FIREBASE_WEB_API_KEY"
-#define DATABASE_URL    "YOUR_PROJECT-default-rtdb.firebaseio.com" // without https://
-#define DEVICE_EMAIL    "esp32@yourdomain.com"
-#define DEVICE_PASSWORD "YOUR_DEVICE_PASSWORD"
+#define API_KEY               "YOUR_FIREBASE_WEB_API_KEY"
+#define FIREBASE_PROJECT_ID   "green-life-1436d"
+#define FIRESTORE_DATABASE_ID "greenlife-db"
+#define DEVICE_EMAIL          "esp32@greenlife.local"
+#define DEVICE_PASSWORD       "YOUR_DEVICE_PASSWORD"
 
 // ---------------- PIN MAPPING ----------------
 #define PIN_DHT         4
@@ -128,6 +128,19 @@ uint64_t getEpochMs() {
   return (uint64_t)now * 1000ULL;
 }
 
+bool readFirestoreNumber(FirebaseJson &json, const String &field, double &outVal) {
+  FirebaseJsonData d;
+  if (json.get(d, "fields/" + field + "/doubleValue") && d.success) {
+    outVal = d.doubleValue;
+    return true;
+  }
+  if (json.get(d, "fields/" + field + "/integerValue") && d.success) {
+    outVal = d.stringValue.length() > 0 ? d.stringValue.toDouble() : (double)d.intValue;
+    return true;
+  }
+  return false;
+}
+
 void readSensorsAndAct() {
   float t = dht.readTemperature();
   float h = dht.readHumidity();
@@ -169,54 +182,73 @@ void readSensorsAndAct() {
   display.display();
 }
 
-void syncFromFirebase() {
+void syncFromFirestore() {
   if (!Firebase.ready()) return;
 
-  if (Firebase.RTDB.getJSON(&fbdo, "/config/limits")) {
-    FirebaseJson &json = fbdo.jsonObject();
-    FirebaseJsonData d;
+  if (Firebase.Firestore.getDocument(&fbdo, FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID, "config/limits")) {
+    FirebaseJson json;
+    json.setJsonData(fbdo.payload());
+    double val = 0;
     bool changed = false;
-    if (json.get(d, "soilMin") && d.intValue != limits.soilMin) { limits.soilMin = d.intValue; changed = true; }
-    if (json.get(d, "soilMax") && d.intValue != limits.soilMax) { limits.soilMax = d.intValue; changed = true; }
-    if (json.get(d, "tempMax")) { limits.tempMax = d.floatValue; changed = true; }
-    if (json.get(d, "tankMinPercent")) { limits.tankMinPercent = d.intValue; changed = true; }
-    if (json.get(d, "logIntervalMin") && d.intValue >= 1) { limits.logIntervalMin = d.intValue; }
+    if (readFirestoreNumber(json, "soilMin", val) && (int)val != limits.soilMin) { limits.soilMin = (int)val; changed = true; }
+    if (readFirestoreNumber(json, "soilMax", val) && (int)val != limits.soilMax) { limits.soilMax = (int)val; changed = true; }
+    if (readFirestoreNumber(json, "tempMax", val)) { limits.tempMax = (float)val; changed = true; }
+    if (readFirestoreNumber(json, "tankMinPercent", val)) { limits.tankMinPercent = (int)val; changed = true; }
+    if (readFirestoreNumber(json, "logIntervalMin", val) && (int)val >= 1) { limits.logIntervalMin = (int)val; }
     if (changed) saveLimitsLocally();
   }
 
-  if (Firebase.RTDB.getJSON(&fbdo, "/control/pump")) {
-    FirebaseJson &json = fbdo.jsonObject();
+  if (Firebase.Firestore.getDocument(&fbdo, FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID, "control/pump")) {
+    FirebaseJson json;
+    json.setJsonData(fbdo.payload());
     FirebaseJsonData d;
-    if (json.get(d, "mode")) pumpMode = d.stringValue;
-    if (json.get(d, "manualOn")) manualOn = d.boolValue;
+    if (json.get(d, "fields/mode/stringValue") && d.success) pumpMode = d.stringValue;
+    if (json.get(d, "fields/manualOn/booleanValue") && d.success) manualOn = d.boolValue;
   }
 }
 
-void pushLatestToFirebase() {
+void pushLatestToFirestore() {
   if (!Firebase.ready()) return;
-  FirebaseJson json;
-  json.set("temp", lastTemp);
-  json.set("humidity", lastHum);
-  json.set("pressure", lastPres);
-  json.set("light", lastLight);
-  json.set("soilMoisture", lastSoil);
-  json.set("tankPercent", lastTank);
-  json.set("pumpOn", pumpOn);
-  json.set("updatedAt", (double)getEpochMs());
-  Firebase.RTDB.setJSON(&fbdo, "/sensors/latest", &json);
+  FirebaseJson content;
+  content.set("fields/temp/doubleValue", lastTemp);
+  content.set("fields/humidity/doubleValue", lastHum);
+  content.set("fields/pressure/doubleValue", lastPres);
+  content.set("fields/light/doubleValue", lastLight);
+  content.set("fields/soilMoisture/integerValue", String(lastSoil));
+  content.set("fields/tankPercent/integerValue", String(lastTank));
+  content.set("fields/pumpOn/booleanValue", pumpOn);
+  content.set("fields/updatedAt/integerValue", String((unsigned long long)getEpochMs()));
+
+  Firebase.Firestore.patchDocument(
+    &fbdo,
+    FIREBASE_PROJECT_ID,
+    FIRESTORE_DATABASE_ID,
+    "telemetry/latest",
+    content.raw(),
+    "temp,humidity,pressure,light,soilMoisture,tankPercent,pumpOn,updatedAt"
+  );
 }
 
-void pushHistoryToFirebase() {
+void pushHistoryToFirestore() {
   if (!Firebase.ready()) return;
-  FirebaseJson json;
-  json.set("temp", lastTemp);
-  json.set("humidity", lastHum);
-  json.set("pressure", lastPres);
-  json.set("light", lastLight);
-  json.set("soilMoisture", lastSoil);
-  json.set("tankPercent", lastTank);
-  json.set("ts", (double)getEpochMs());
-  Firebase.RTDB.pushJSON(&fbdo, "/sensors/history", &json);
+  FirebaseJson content;
+  content.set("fields/temp/doubleValue", lastTemp);
+  content.set("fields/humidity/doubleValue", lastHum);
+  content.set("fields/pressure/doubleValue", lastPres);
+  content.set("fields/light/doubleValue", lastLight);
+  content.set("fields/soilMoisture/integerValue", String(lastSoil));
+  content.set("fields/tankPercent/integerValue", String(lastTank));
+  content.set("fields/ts/integerValue", String((unsigned long long)getEpochMs()));
+
+  Firebase.Firestore.createDocument(
+    &fbdo,
+    FIREBASE_PROJECT_ID,
+    FIRESTORE_DATABASE_ID,
+    "history",
+    "",
+    content.raw(),
+    ""
+  );
 }
 
 void setup() {
@@ -246,7 +278,6 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
     fbConfig.api_key = API_KEY;
-    fbConfig.database_url = DATABASE_URL;
     auth.user.email = DEVICE_EMAIL;
     auth.user.password = DEVICE_PASSWORD;
     fbConfig.token_status_callback = tokenStatusCallback;
@@ -267,16 +298,16 @@ void loop() {
   if (fbReady && WiFi.status() == WL_CONNECTED) {
     if (now - lastSyncDownMs >= 3000) {
       lastSyncDownMs = now;
-      syncFromFirebase();
+      syncFromFirestore();
     }
     if (now - lastLatestPushMs >= 5000) {
       lastLatestPushMs = now;
-      pushLatestToFirebase();
+      pushLatestToFirestore();
     }
     unsigned long intervalMs = (unsigned long)limits.logIntervalMin * 60000UL;
     if (now - lastHistoryMs >= intervalMs) {
       lastHistoryMs = now;
-      pushHistoryToFirebase();
+      pushHistoryToFirestore();
     }
   }
 }

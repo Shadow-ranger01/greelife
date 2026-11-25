@@ -1,0 +1,175 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model (Project: green-life-1436d, DB: greenlife-db)
+// ===============================================================
+//
+// Collection: telemetry
+// Document ID: latest (singleton)
+// Fields:
+//   - temp: number (required, -40..100) - Ambient temperature in °C
+//   - humidity: number (required, 0..100) - Relative humidity in %
+//   - pressure: number (required, 300..1200) - Atmospheric pressure in hPa
+//   - light: number (required, 0..200000) - Illuminance in lux
+//   - soilMoisture: number (required, 0..100) - Soil moisture in %
+//   - tankPercent: number (required, 0..100) - Water tank level in %
+//   - pumpOn: bool (required) - Current pump state
+//   - updatedAt: number (required, > 0) - Last update timestamp
+// Access: Signed-in users can read, create, and update (valid data only); delete disallowed.
+//
+// Collection: history
+// Document ID: {entryId}
+// Fields:
+//   - temp: number (required, -40..100)
+//   - humidity: number (required, 0..100)
+//   - pressure: number (required, 300..1200)
+//   - light: number (required, 0..200000)
+//   - soilMoisture: number (required, 0..100)
+//   - tankPercent: number (required, 0..100)
+//   - ts: number (required, > 0) - Reading timestamp
+// Access: Signed-in users can read and create (valid data only); update & delete disallowed (immutable).
+//
+// Collection: config
+// Document ID: limits (singleton)
+// Fields:
+//   - soilMin: number (required, 0..99, < soilMax)
+//   - soilMax: number (required, 1..100, > soilMin)
+//   - tempMax: number (required, 0..70)
+//   - tankMinPercent: number (required, 0..95)
+//   - logIntervalMin: number (required, 1..1440)
+// Access: Signed-in users can read, create, and update (valid data only); delete disallowed.
+//
+// Collection: control
+// Document ID: pump (singleton)
+// Fields:
+//   - mode: string (required, 'auto' | 'manual')
+//   - manualOn: bool (required)
+// Access: Signed-in users can read, create, and update (valid data only); delete disallowed.
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the request comes from an authenticated Firebase user
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Enforce exact schema: all required fields present and no extraneous fields
+    function hasRequiredFields(data, fields) {
+      return data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(data, fields) {
+      return data.keys().hasOnly(fields);
+    }
+
+    function hasExactFields(data, fields) {
+      return hasRequiredFields(data, fields) && hasOnlyAllowedFields(data, fields);
+    }
+
+    // Validate numeric value is within [minVal, maxVal] (NaN comparisons evaluate to false)
+    function isNumberInRange(val, minVal, maxVal) {
+      return val is number && val >= minVal && val <= maxVal;
+    }
+
+    // Validate strictly positive numeric value (> 0)
+    function isPositiveNumber(val) {
+      return val is number && val > 0;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    // Shared environmental sensor fields used by both telemetry/latest and history/{entryId}
+    function hasValidSensorMetrics(data) {
+      return isNumberInRange(data.temp, -40, 100) &&
+             isNumberInRange(data.humidity, 0, 100) &&
+             isNumberInRange(data.pressure, 300, 1200) &&
+             isNumberInRange(data.light, 0, 200000) &&
+             isNumberInRange(data.soilMoisture, 0, 100) &&
+             isNumberInRange(data.tankPercent, 0, 100);
+    }
+
+    function isValidTelemetry(data) {
+      return hasExactFields(data, [
+               'temp', 'humidity', 'pressure', 'light',
+               'soilMoisture', 'tankPercent', 'pumpOn', 'updatedAt'
+             ]) &&
+             hasValidSensorMetrics(data) &&
+             data.pumpOn is bool &&
+             isPositiveNumber(data.updatedAt);
+    }
+
+    function isValidHistoryEntry(data) {
+      return hasExactFields(data, [
+               'temp', 'humidity', 'pressure', 'light',
+               'soilMoisture', 'tankPercent', 'ts'
+             ]) &&
+             hasValidSensorMetrics(data) &&
+             isPositiveNumber(data.ts);
+    }
+
+    function isValidConfigLimits(data) {
+      return hasExactFields(data, [
+               'soilMin', 'soilMax', 'tempMax', 'tankMinPercent', 'logIntervalMin'
+             ]) &&
+             isNumberInRange(data.soilMin, 0, 99) &&
+             isNumberInRange(data.soilMax, 1, 100) &&
+             data.soilMin < data.soilMax &&
+             isNumberInRange(data.tempMax, 0, 70) &&
+             isNumberInRange(data.tankMinPercent, 0, 95) &&
+             isNumberInRange(data.logIntervalMin, 1, 1440);
+    }
+
+    function isValidPumpControl(data) {
+      return hasExactFields(data, ['mode', 'manualOn']) &&
+             data.mode is string &&
+             data.mode in ['auto', 'manual'] &&
+             data.manualOn is bool;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Singleton live telemetry document
+    match /telemetry/latest {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidTelemetry(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Immutable time-series history logs
+    match /history/{entryId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidHistoryEntry(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // Singleton threshold & logging configuration
+    match /config/limits {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidConfigLimits(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Singleton pump mode & manual override control
+    match /control/pump {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidPumpControl(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Default deny all other documents and subcollections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
