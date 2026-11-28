@@ -210,7 +210,7 @@ export default function DashboardPage() {
       tankMinPercent: limitDraft.tankMinPercent,
       logIntervalMin: limitDraft.logIntervalMin,
     });
-    setSaveMessage("লিমিট সফলভাবে সংরক্ষিত হয়েছে।");
+    setSaveMessage("Limits saved successfully.");
   }
 
   function handleExportCsv() {
@@ -241,7 +241,7 @@ export default function DashboardPage() {
       const data = await res.json();
       setAiInsight(res.ok ? data.insight : `Error: ${data.error}`);
     } catch {
-      setAiInsight("AI সার্ভারে সংযোগ করা যায়নি।");
+      setAiInsight("Failed to connect to the AI server.");
     } finally {
       setAiLoading(false);
     }
@@ -250,16 +250,16 @@ export default function DashboardPage() {
   if (!isFirebaseConfigured) {
     return (
       <main className="mx-auto max-w-xl p-6 mt-12 rounded-xl border bg-white shadow-sm">
-        <h1 className="text-xl font-bold text-slate-900">Firebase কনফিগার করা হয়নি</h1>
+        <h1 className="text-xl font-bold text-slate-900">Firebase is not configured</h1>
         <p className="mt-2 text-sm text-slate-600">
-          <code>web/.env.example</code> কপি করে <code>web/.env.local</code> তৈরি করুন এবং Firebase ও Gemini কী দিন।
+          Copy <code>web/.env.example</code> to <code>web/.env.local</code> and add your Firebase and Gemini keys.
         </p>
       </main>
     );
   }
 
   if (!authReady) {
-    return <main className="p-8 text-center text-slate-500">লোড হচ্ছে...</main>;
+    return <main className="p-8 text-center text-slate-500">Loading...</main>;
   }
 
   if (!user) {
@@ -269,7 +269,7 @@ export default function DashboardPage() {
           {isSignUp ? "Create Green Life Account" : "Green Life Monitor Sign In"}
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          ডেটা দেখা ও মোটর কন্ট্রোলের জন্য সাইন ইন করুন।
+          Sign in to view live sensor data and control the motor.
         </p>
 
         <form onSubmit={handleEmailAuth} method="POST" className="mt-5 space-y-4">
@@ -339,7 +339,7 @@ export default function DashboardPage() {
 
         <div className="my-4 flex items-center gap-3 text-xs text-slate-400">
           <div className="h-px flex-1 bg-slate-200" />
-          <span>অথবা</span>
+          <span>or</span>
           <div className="h-px flex-1 bg-slate-200" />
         </div>
 
@@ -361,8 +361,8 @@ export default function DashboardPage() {
           className="mt-4 w-full text-center text-xs text-emerald-700 hover:underline"
         >
           {isSignUp
-            ? "আগে থেকেই অ্যাকাউন্ট আছে? Sign In করুন"
-            : "নতুন অ্যাকাউন্ট খুলতে চান? Create Account"}
+            ? "Already have an account? Sign In"
+            : "Need a new account? Create Account"}
         </button>
       </main>
     );
@@ -378,8 +378,8 @@ export default function DashboardPage() {
           <p className="text-xs text-slate-500">
             {user.email ?? user.displayName} •{" "}
             {latest?.updatedAt
-              ? `সর্বশেষ আপডেট: ${new Date(latest.updatedAt).toLocaleString()}`
-              : "ESP32 ডেটার জন্য অপেক্ষা করছে..."}
+              ? `Last updated: ${new Date(latest.updatedAt).toLocaleString()}`
+              : "Waiting for ESP32 data..."}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -409,8 +409,8 @@ export default function DashboardPage() {
         >
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>
-            {dryTank && "ট্যাংকে পানি কম! ড্রাই-রান সুরক্ষায় পাম্প লক করা আছে। "}
-            {highTemp && `তাপমাত্রা সীমা (${limits.tempMax}°C) ছাড়িয়েছে!`}
+            {dryTank && "Low water tank! Pump is locked for dry-run protection. "}
+            {highTemp && `Temperature exceeded limit (${limits.tempMax}°C)!`}
           </span>
         </div>
       )}
@@ -456,11 +456,11 @@ export default function DashboardPage() {
             <div className="text-sm">
               <p className="font-medium text-slate-800">
                 {control.mode === "auto"
-                  ? `অটো হিস্টেরেসিস (${limits.soilMin}% – ${limits.soilMax}%)`
-                  : "ম্যানুয়াল পাম্প সুইচ"}
+                  ? `Auto Hysteresis (${limits.soilMin}% – ${limits.soilMax}%)`
+                  : "Manual Pump Switch"}
               </p>
               <p className="text-xs text-slate-500">
-                সিদ্ধান্ত: {expectedDecision ? expectedDecision.reason : "waiting"}
+                Status: {expectedDecision ? expectedDecision.reason : "waiting"}
               </p>
             </div>
             <button
@@ -538,7 +538,7 @@ export default function DashboardPage() {
         <div className="h-72 w-full">
           {chartData.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              হিস্ট্রি গ্রাফের জন্য ডেটা নেই
+              No historical data available for the chart
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -580,11 +580,11 @@ export default function DashboardPage() {
             className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
           >
             <Sparkles className="h-3.5 w-3.5" />
-            {aiLoading ? "বিশ্লেষণ হচ্ছে..." : "AI বিশ্লেষণ দেখুন"}
+            {aiLoading ? "Analyzing..." : "Generate AI Insight"}
           </button>
         </div>
         <div className="whitespace-pre-wrap rounded-xl bg-slate-50 p-4 text-sm text-slate-700">
-          {aiInsight ?? "সংরক্ষিত সেন্সর ডেটা বিশ্লেষণ করতে উপরের বাটনে ক্লিক করুন।"}
+          {aiInsight ?? "Click the button above to analyze recorded sensor data."}
         </div>
       </section>
     </main>

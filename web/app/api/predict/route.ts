@@ -52,10 +52,10 @@ export async function POST(request: Request) {
   const prompt = [
     "You are an agricultural micro-climate advisor for a smart farming system in Bangladesh.",
     "Analyze the sensor readings and configured thresholds below.",
-    "Give a concise response in Bangla with 3 short bullet points:",
-    "1) বর্তমান মাটি ও আবহাওয়ার প্রবণতা (Short-term micro-climate trend)",
-    "2) সেচ ও ট্যাংকের অবস্থা (Irrigation & water tank status)",
-    "3) পরবর্তী করণীয় পরামর্শ (Actionable advice for the farmer)",
+    "Give a concise response in English with 3 short bullet points:",
+    "1) Short-term micro-climate trend",
+    "2) Irrigation & water tank status",
+    "3) Actionable advice for the farmer",
     "",
     `Configured Limits: ${JSON.stringify(body.limits ?? {})}`,
     `Latest Reading: ${JSON.stringify(body.latest ?? {})}`,
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({
-      insight: interaction.output_text ?? "কোনো বিশ্লেষণ পাওয়া যায়নি।",
+      insight: interaction.output_text ?? "No analysis available.",
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Gemini request failed.";
