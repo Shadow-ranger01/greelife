@@ -9,7 +9,6 @@
 #include <time.h>
 #include <DHT.h>
 #include <Adafruit_BMP280.h>
-#include <BH1750.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Firebase_ESP_Client.h>
@@ -29,6 +28,7 @@
 #define PIN_DHT         4
 #define DHT_TYPE        DHT11
 #define PIN_SOIL        34   // ADC1 input
+#define PIN_UV          35   // HW-837 (GUVA-S12SD) SIO analog output (ADC1)
 #define PIN_TRIG        5
 #define PIN_ECHO        18   // Use 1k + 2k voltage divider (5V -> 3.3V)
 #define PIN_RELAY       26
@@ -46,7 +46,6 @@ const float TANK_FULL_CM  = 4.0;
 // ---------------- OBJECTS ----------------
 DHT dht(PIN_DHT, DHT_TYPE);
 Adafruit_BMP280 bmp;
-BH1750 lightMeter;
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 Preferences prefs;
 
@@ -75,6 +74,7 @@ unsigned long lastLatestPushMs = 0;
 unsigned long lastSyncDownMs = 0;
 unsigned long lastHistoryMs = 0;
 bool fbReady = false;
+bool oledOk = false;
 
 void setRelay(bool on) {
   pumpOn = on;
@@ -150,8 +150,8 @@ void readSensorsAndAct() {
   float p = bmp.readPressure() / 100.0f;
   if (!isnan(p) && p > 300.0f) lastPres = p;
 
-  float lx = lightMeter.readLightLevel();
-  if (lx >= 0.0f) lastLight = lx;
+  int uvRaw = analogRead(PIN_UV);
+  lastLight = (uvRaw / 4095.0f) * 3300.0f; // HW-837 analog output in mV
 
   lastSoil = readSoilPercent();
   lastTank = readTankPercent();
@@ -170,16 +170,18 @@ void readSensorsAndAct() {
 
   digitalWrite(PIN_BUZZER, (dryTank || highTemp) ? HIGH : LOW);
 
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.printf("T:%.1fC H:%.0f%% P:%.0f\n", lastTemp, lastHum, lastPres);
-  display.printf("Light: %.0f lx\n", lastLight);
-  display.printf("Soil : %d%% (Min %d)\n", lastSoil, limits.soilMin);
-  display.printf("Tank : %d%% %s\n", lastTank, dryTank ? "[LOW!]" : "");
-  display.printf("Pump : %s (%s)\n", pumpOn ? "ON" : "OFF", pumpMode.c_str());
-  display.display();
+  if (oledOk) {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.printf("T:%.1fC H:%.0f%% P:%.0f\n", lastTemp, lastHum, lastPres);
+    display.printf("UV: %.0f mV\n", lastLight);
+    display.printf("Soil : %d%% (Min %d)\n", lastSoil, limits.soilMin);
+    display.printf("Tank : %d%% %s\n", lastTank, dryTank ? "[LOW!]" : "");
+    display.printf("Pump : %s (%s)\n", pumpOn ? "ON" : "OFF", pumpMode.c_str());
+    display.display();
+  }
 }
 
 void syncFromFirestore() {
@@ -264,8 +266,7 @@ void setup() {
   Wire.begin(21, 22);
   dht.begin();
   bmp.begin(0x76);
-  lightMeter.begin();
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  oledOk = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting WiFi");
