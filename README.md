@@ -2,70 +2,90 @@
 
 **Stack:** Next.js (App Router) + Firebase Authentication (Email/Password & Google Sign-In) + Cloud Firestore (`greenlife-db`) + Vercel + Gemini API + ESP32
 
-## 1. Hardware Wiring & Connection Diagram (ESP32)
+## 1. Hardware Components & Connection Diagram (ESP32)
+
+### Connection Diagram
 
 ```mermaid
 flowchart LR
-    subgraph PSU["External 5V Power Supply"]
-        V5["+5V Rail"]
-        GND["Common GND"]
+    USB["USB Cable (5V Power & Programming)"] -->|"5V & Data"| ESP["ESP32 Development Board"]
+
+    subgraph RAILS["Breadboard Power Rails"]
+        V33["3.3V Rail"]
+        V5["5V Rail (VIN / External 5V)"]
+        GND["Common GND Rail"]
     end
 
-    subgraph I2C["I2C Bus (3.3V)"]
-        BMP["BMP280 Pressure"]
-        BH["BH1750 Light"]
-        OLED["SSD1306 OLED 0.96"]
+    ESP -->|"3V3"| V33
+    ESP -->|"5V / VIN"| V5
+    ESP -->|"GND"| GND
+
+    subgraph I2C["I2C Sensors (3.3V)"]
+        BMP["BMP280 Barometric Pressure"]
+        BH["BH1750 Light Sensor"]
     end
 
-    subgraph SENS["Digital & Analog Sensors"]
+    subgraph IO["Digital & Analog Sensors"]
         DHT["DHT11 Temp & Humidity"]
         SOIL["Soil Moisture Sensor"]
-        US["HC-SR04 Ultrasonic"]
+        US["HC-SR04 Ultrasonic Sensor"]
     end
 
-    ESP["ESP32 DevKitC"]
-
-    subgraph OUT["Actuators & Alerts"]
+    subgraph OUT["Alerts & Irrigation"]
         BUZ["3.3V Active Buzzer"]
-        REL["5V Relay Module"]
-        PUMP["5V Pump + 1N4007 Diode"]
+        REL["1-Channel 5V Relay Module"]
+        PUMP["5V Mini Submersible Water Pump"]
+        TUBE["Tubing -> Plant"]
     end
 
-    V5 -->|"5V (VIN)"| ESP
-    V5 -->|"VCC"| US
-    V5 -->|"DC+ & COM"| REL
-    GND -->|"GND"| ESP
-    GND -->|"GND"| US
-    GND -->|"DC-"| REL
-    GND -->|"Pump -"| PUMP
+    V33 -->|"VCC"| I2C
+    GND -->|"GND"| I2C
+    ESP <-->|"GPIO 21 (SDA) / GPIO 22 (SCL)"| I2C
 
-    ESP -->|"3V3 & GND"| I2C
-    ESP <-->|"GPIO 21 SDA / GPIO 22 SCL"| I2C
-
-    ESP -->|"3V3 & GND"| DHT
+    V33 -->|"VCC"| DHT
+    GND -->|"GND"| DHT
     DHT -->|"DATA -> GPIO 4"| ESP
 
-    ESP -->|"3V3 & GND"| SOIL
-    SOIL -->|"SIG -> GPIO 34"| ESP
+    V33 -->|"VCC"| SOIL
+    GND -->|"GND"| SOIL
+    SOIL -->|"AO / SIG -> GPIO 34"| ESP
 
+    V5 -->|"VCC"| US
+    GND -->|"GND"| US
     ESP -->|"TRIG -> GPIO 5"| US
     US -->|"ECHO -> 1k/2k Divider -> GPIO 18"| ESP
 
-    ESP -->|"GPIO 25 & GND"| BUZ
+    ESP -->|"GPIO 25 (+)"| BUZ
+    GND -->|"(-)"| BUZ
+
+    V5 -->|"DC+ & COM"| REL
+    GND -->|"DC-"| REL
     ESP -->|"IN -> GPIO 26"| REL
-    REL -->|"NO -> Pump +"| PUMP
+    REL -->|"NO -> Pump (+)"| PUMP
+    GND -->|"Pump (-)"| PUMP
+    PUMP -->|"Water Flow"| TUBE
 ```
 
-> **Safety Notes:** Use a `1kΩ + 2kΩ` voltage divider on `HC-SR04 ECHO` (`5V -> 3.3V`), place a reverse-biased `1N4007` flyback diode across the pump terminals, and power the relay/pump from an external `5V` supply with common `GND`.
+> **Safety & Wiring Notes:**
+> - **HC-SR04 `ECHO` Protection:** Use a `1kΩ + 2kΩ` voltage divider (`ECHO -> 1kΩ -> GPIO 18`, `GPIO 18 -> 2kΩ -> GND`) so `5V` does not damage the `3.3V` ESP32 pin.
+> - **Power Stability:** The `USB Cable` powers the ESP32 and sensors during prototyping on the breadboard; if the ESP32 resets when the `5V Mini Submersible Water Pump` turns ON, power the relay/pump rail from an external `5V` adapter sharing `Common GND` and add a `1N4007` flyback diode across the pump terminals.
 
-| Component | ESP32 Pin / Bus | Power & Notes |
-|---|---|---|
-| BMP280, BH1750, SSD1306 OLED | `GPIO 21 (SDA)`, `GPIO 22 (SCL)` | Shared I²C (`3.3V`, `GND`) |
-| DHT11 | `GPIO 4` | `3.3V`, `GND` (`10kΩ` pull-up on `DATA` if bare sensor) |
-| Soil Moisture Sensor | `GPIO 34` | Analog ADC1 input (`3.3V`, `GND`) |
-| HC-SR04 Ultrasonic | `Trig: GPIO 5`, `Echo: GPIO 18` | `5V`, `GND`; use `1kΩ + 2kΩ` voltage divider on `Echo` |
-| 1-Channel 5V Relay + Pump | `GPIO 26` | External `5V` + common `GND`; add `1N4007` flyback diode |
-| 3.3V Active Buzzer | `GPIO 25` | `GPIO 25 (+)` and `GND (-)` |
+### Pin-to-Pin Connection Table
+
+| Component | Qty | ESP32 Pin / Bus | Power & Wiring | Purpose |
+|---|---|---|---|---|
+| **ESP32 Development Board** | 1 | Main Controller | Powered/programmed via `USB Cable` | Processes sensor data & controls system |
+| **DHT11 Temp & Humidity Sensor** | 1 | `GPIO 4` (DATA) | `3.3V`, `GND` | Measures temperature & relative humidity |
+| **BMP280 Barometric Pressure Sensor** | 1 | `GPIO 21` (SDA), `GPIO 22` (SCL) | `3.3V`, `GND` (I²C) | Measures atmospheric pressure |
+| **BH1750 Light Sensor** | 1 | `GPIO 21` (SDA), `GPIO 22` (SCL) | `3.3V`, `GND` (I²C) | Measures ambient light intensity |
+| **Soil Moisture Sensor** | 1 | `GPIO 34` (AO / SIG) | `3.3V`, `GND` (ADC1) | Measures soil moisture condition |
+| **HC-SR04 Ultrasonic Sensor** | 1 | `GPIO 5` (TRIG), `GPIO 18` (ECHO) | `5V`, `GND` (`1kΩ+2kΩ` divider on `ECHO`) | Measures distance for water level monitoring |
+| **3.3V Active Buzzer** | 1 | `GPIO 25` (+) | `GND` (-) | Provides alerts/warnings |
+| **1-Channel 5V Relay Module** | 1 | `GPIO 26` (IN) | `DC+` → `5V`, `DC-` → `GND`, `COM` → `5V`, `NO` → `Pump (+)` | Allows ESP32 to switch the water pump |
+| **5V Mini Submersible Water Pump** | 1 | Switched via Relay `NO` | `(+)` ← Relay `NO`, `(-)` → `GND` | Supplies water for automatic irrigation |
+| **Breadboard & Jumper Wires** | 1 / - | Prototyping & buses | `3.3V`, `5V`, and `GND` rails | Electrical connections |
+| **USB Cable** | 1 | Micro-USB / USB-C | Connected to PC / 5V USB | Programming and powering ESP32 |
+| **Tubing** | 1~3 | Pump outlet → Plant | Mechanical water line | Carries water from pump to plant |
 
 ## 2. Firebase Project (`green-life-1436d`)
 - Web App registered: `greenlife-web` (`1:214170718127:web:3071937fe7026ea7e3695a`)
