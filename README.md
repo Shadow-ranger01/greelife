@@ -4,7 +4,22 @@
 
 ## 1. Hardware Components & Connection Diagram (ESP32)
 
-### Connection Diagram
+![ESP32 Hardware Connection Diagram](./docs/wiring-diagram.svg)
+
+### Quick Breadboard Wiring Checklist
+1. **Power Rails (`Breadboard` + `USB Cable`):** Plug the `ESP32` into the breadboard and connect `ESP32 3V3` → `+3.3V` rail, `ESP32 5V/VIN` → `+5V` rail, and `ESP32 GND` → `Common GND` rail.
+2. **I²C Sensors (`BMP280` + `BH1750`):** Connect both sensors' `VCC` → `3.3V`, `GND` → `GND`, `SDA` → `GPIO 21`, and `SCL` → `GPIO 22`.
+3. **Environmental & Soil Sensors:**
+   - `DHT11`: `VCC` → `3.3V`, `GND` → `GND`, `DATA` → `GPIO 4`
+   - `Soil Moisture Sensor`: `VCC` → `3.3V`, `GND` → `GND`, `AO/SIG` → `GPIO 34`
+4. **Water Level (`HC-SR04 Ultrasonic`):** `VCC` → `5V`, `GND` → `GND`, `TRIG` → `GPIO 5`, and `ECHO` → `1kΩ` resistor → `GPIO 18` (with a `2kΩ` resistor from `GPIO 18` to `GND` to drop `5V` safely to `3.3V`).
+5. **Buzzer & Auto Irrigation (`Relay + Pump + Tubing`):**
+   - `3.3V Active Buzzer`: `(+)` → `GPIO 25`, `(-)` → `GND`
+   - `1-Channel 5V Relay`: `DC+` → `5V`, `DC-` → `GND`, `IN` → `GPIO 26`, `COM` → `5V`, `NO` → `Pump (+)`
+   - `5V Mini Submersible Pump`: `(-)` → `GND`, outlet → `Tubing` → Plant *(if ESP32 restarts when the pump runs, power the `5V` relay/pump rail from an external `5V` adapter with shared `GND` and add a `1N4007` flyback diode across the pump terminals)*.
+
+<details>
+<summary>Mermaid Flow View & Full Pin Table (Click to expand)</summary>
 
 ```mermaid
 flowchart LR
@@ -66,12 +81,6 @@ flowchart LR
     PUMP -->|"Water Flow"| TUBE
 ```
 
-> **Safety & Wiring Notes:**
-> - **HC-SR04 `ECHO` Protection:** Use a `1kΩ + 2kΩ` voltage divider (`ECHO -> 1kΩ -> GPIO 18`, `GPIO 18 -> 2kΩ -> GND`) so `5V` does not damage the `3.3V` ESP32 pin.
-> - **Power Stability:** The `USB Cable` powers the ESP32 and sensors during prototyping on the breadboard; if the ESP32 resets when the `5V Mini Submersible Water Pump` turns ON, power the relay/pump rail from an external `5V` adapter sharing `Common GND` and add a `1N4007` flyback diode across the pump terminals.
-
-### Pin-to-Pin Connection Table
-
 | Component | Qty | ESP32 Pin / Bus | Power & Wiring | Purpose |
 |---|---|---|---|---|
 | **ESP32 Development Board** | 1 | Main Controller | Powered/programmed via `USB Cable` | Processes sensor data & controls system |
@@ -86,6 +95,8 @@ flowchart LR
 | **Breadboard & Jumper Wires** | 1 / - | Prototyping & buses | `3.3V`, `5V`, and `GND` rails | Electrical connections |
 | **USB Cable** | 1 | Micro-USB / USB-C | Connected to PC / 5V USB | Programming and powering ESP32 |
 | **Tubing** | 1~3 | Pump outlet → Plant | Mechanical water line | Carries water from pump to plant |
+
+</details>
 
 ## 2. Firebase Project (`green-life-1436d`)
 - Web App registered: `greenlife-web` (`1:214170718127:web:3071937fe7026ea7e3695a`)
